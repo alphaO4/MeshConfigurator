@@ -1,4 +1,3 @@
-
 > **Not affiliated with Meshtastic.** This project is an independent, community-built tool **for Meshtastic** devices and is not endorsed by Meshtastic LLC.
 
 
@@ -17,9 +16,7 @@ A focused, fast, and pragmatic GUI for configuring Meshtastic devices.
 Built with `customtkinter`, it supports reading the device model, editing settings
 (including modules), diffing, and applying changes via the Meshtastic CLI/API.
 
-> **Note**
-> Meshtastic® is a registered trademark of Meshtastic LLC. This project is not
-> affiliated with or endorsed by Meshtastic LLC. See [TRADEMARKS](./TRADEMARKS.md).
+
 
 ---
 
@@ -62,5 +59,6 @@ python app.py
 ```
 
 ---
-
-**Trademark Notice.** Meshtastic® is a registered trademark of Meshtastic LLC. Meshtastic software components are released under various licenses, see GitHub for details. No warranty is provided — use at your own risk.
+**Trademark Notice.** Meshtastic® is a registered trademark of Meshtastic LLC. This project is not affiliated with or endorsed by Meshtastic LLC
+Meshtastic software components are released under various licenses, see GitHub for details. No warranty is provided — use at your own risk.
+See [TRADEMARKS](./TRADEMARKS.md).
