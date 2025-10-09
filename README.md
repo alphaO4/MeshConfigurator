@@ -6,7 +6,7 @@
 Prefer not to build from source? An **EV-code-signed** Windows installer is available on Gumroad.
 This is **purely optional** — the installer and the source build are functionally identical.
 
-**[Get the Windows installer on Gumroad](your-gumroad-link)**
+**[Get the Windows installer on Gumroad](https://analyzify.gumroad.com/l/meshconfigurator)**
 
 ---
 
