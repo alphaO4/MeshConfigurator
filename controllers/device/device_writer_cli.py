@@ -49,10 +49,33 @@ class DeviceWriterCLI(DeviceBase):
         self.reader = DeviceReader(iface=self._iface)
 
     def apply_from_models(self, original: DeviceModel, edited: DeviceModel) -> Dict[str, Any]:
+        """
+        Apply diffs using the CLI and always return a post-apply snapshot to
+        repopulate the UI reliably, even when there are no changes.
+        """
         diff = self._build_diff(original, edited)
-        if not any(diff.values()):
-            log.info("no changes detected; skipping writes")
-            return {"status": "no_change", "sections": {}}
+
+        # Determine if there are any real changes (treat empty channel plan as no-change)
+        def _has_changes(d: Dict[str, Any]) -> bool:
+            for key, val in (d or {}).items():
+                if key == "channels":
+                    ch = val or {}
+                    if (ch.get("deletes") or ch.get("upserts")):
+                        return True
+                elif val:
+                    return True
+            return False
+
+        # If nothing changed, still provide a fresh snapshot for the UI
+        if not _has_changes(diff):
+            log.info("no changes detected; returning current snapshot for UI consistency")
+            try:
+                snap = self.reader.snapshot(force_refresh=False)
+            except Exception:
+                # Best-effort fallback without force refresh
+                log.debug("snapshot without force refresh failed; retrying force_refresh", exc_info=True)
+                snap = self.reader.snapshot(force_refresh=True)
+            return {"status": "no_change", "sections": {}, "errors": [], "post_snapshot": snap}
 
         log.info("detaching API interface for CLI operations")
         self._detach_for_cli()
@@ -79,7 +102,6 @@ class DeviceWriterCLI(DeviceBase):
             for section, fn, payload in execution_plan:
                 if not payload:
                     continue
-                # log.info("%s; changes=%s", section, self._redact(payload))
                 sec_res = fn(payload)
                 report["sections"][section] = sec_res
                 if sec_res.get("status") == "success":
@@ -98,7 +120,7 @@ class DeviceWriterCLI(DeviceBase):
                 log.info("attempting reconnect...")
                 self._reconnect_after_cli(wait_ready_s=15.0)
                 post_snapshot = self.reader.snapshot(force_refresh=True)
-                report["post_snapshot"] = post_snapshot  # .model_dump()
+                report["post_snapshot"] = post_snapshot
                 log.info("reconnect and post-apply snapshot successful")
             except Exception as e:
                 report.setdefault("errors", []).append({"reconnect_or_snapshot": str(e)})
@@ -324,7 +346,11 @@ class DeviceWriterCLI(DeviceBase):
                     fields[cli_key] = val_e
 
             if fields:
-                upserts.append({"index": idx, "fields": fields})
+                upserts.append({
+                    "index": idx,
+                    "fields": fields,
+                    "is_new": idx not in by_idx_o,
+                })
 
         return {"deletes": sorted(deletes, reverse=True), "upserts": upserts}
     
@@ -400,20 +426,47 @@ class DeviceWriterCLI(DeviceBase):
             overall_status = "success"
 
         for item in plan.get("upserts", []):
-            idx, fields = item["index"], item["fields"]
-            args = ["--ch-index", str(idx)]
-            if idx > 0 and "name" in fields:
-                args = ["--ch-add", fields.pop("name")]
+            idx, fields = item["index"], dict(item["fields"])  # copy, we'll pop keys
+            is_new = bool(item.get("is_new"))
 
-            for key, value in fields.items():
-                if key == "psk":
-                    val = "default" if value == "default" else f"base64:{value}"
-                    args.extend(["--ch-set", "psk", val])
+            # Primary (index 0): always update in place via --ch-index 0
+            if int(idx) == 0:
+                args = ["--ch-index", "0"]
+                # Apply fields (including name if provided)
+                for key, value in fields.items():
+                    if key == "psk":
+                        val = "default" if value == "default" else f"base64:{value}"
+                        args.extend(["--ch-set", "psk", val])
+                    else:
+                        val = _lower_bool(value) if isinstance(value, bool) else str(value)
+                        args.extend(["--ch-set", key, val])
+                res = self._run_cli_logged("channels:set[0]", args, timeout_s=25.0)
+            else:
+                if is_new:
+                    # New secondary: add anew and set fields
+                    add_name = fields.pop("name", None)
+                    if not add_name:
+                        add_name = f"Channel {idx}"
+                    args = ["--ch-add", str(add_name)]
+                    for key, value in fields.items():
+                        if key == "psk":
+                            val = "default" if value == "default" else f"base64:{value}"
+                            args.extend(["--ch-set", "psk", val])
+                        else:
+                            val = _lower_bool(value) if isinstance(value, bool) else str(value)
+                            args.extend(["--ch-set", key, val])
+                    res = self._run_cli_logged(f"channels:add[{add_name}]", args, timeout_s=25.0)
                 else:
-                    val = _lower_bool(value) if isinstance(value, bool) else str(value)
-                    args.extend(["--ch-set", key, val])
-
-            res = self._run_cli_logged(f"channels:set[{idx}]", args, timeout_s=25.0)
+                    # Existing secondary: update in place
+                    args = ["--ch-index", str(idx)]
+                    for key, value in fields.items():
+                        if key == "psk":
+                            val = "default" if value == "default" else f"base64:{value}"
+                            args.extend(["--ch-set", "psk", val])
+                        else:
+                            val = _lower_bool(value) if isinstance(value, bool) else str(value)
+                            args.extend(["--ch-set", key, val])
+                    res = self._run_cli_logged(f"channels:set[{idx}]", args, timeout_s=25.0)
             results["upserts"].append({"index": idx, **self._to_section_result(res, fields=list(fields.keys()))})
             if res.returncode != 0:
                 return {"status": "error", **results}

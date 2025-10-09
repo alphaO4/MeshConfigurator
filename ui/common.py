@@ -14,6 +14,7 @@ def is_base64ish(s: str) -> bool:
     except Exception:
         return False
 
+
 def make_collapsible(parent: ctk.CTkFrame, title: str, open: bool = False):
     """
     Returns (header_frame, content_frame, toggle_fn).
@@ -25,6 +26,7 @@ def make_collapsible(parent: ctk.CTkFrame, title: str, open: bool = False):
     header = ctk.CTkFrame(wrapper)
     header.pack(fill="x")
 
+    # Use clear, cross-platform glyphs for the disclosure chevron
     chevron = ctk.CTkLabel(header, text=("▼" if open else "▶"), width=12)
     chevron.pack(side="left", padx=(6, 6))
     title_lbl = ctk.CTkLabel(header, text=title, font=ctk.CTkFont(size=14, weight="bold"))
@@ -52,6 +54,7 @@ def make_collapsible(parent: ctk.CTkFrame, title: str, open: bool = False):
 
     return header, content, toggle
 
+
 def create_setting_row(
     parent: ctk.CTkFrame,
     label_text: str,
@@ -65,8 +68,8 @@ def create_setting_row(
 ):
     """
     Standardized two-column layout:
-      - Column 0: Label
-      - Column 1: Entry or CheckBox (kind='entry'|'checkbox')
+    - Column 0: Label
+    - Column 1: Entry or CheckBox (kind='entry'|'checkbox')
     Returns the created widget (Entry or CheckBox).
     """
     parent.grid_columnconfigure(0, weight=0)
@@ -90,3 +93,4 @@ def create_setting_row(
         widget.grid(row=row_index, column=1, padx=6, pady=4, sticky="ew")
 
     return widget
+

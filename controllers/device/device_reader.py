@@ -115,7 +115,32 @@ class DeviceReader(DeviceBase):
                 ln.requestChannels()
             except Exception:
                 pass
-            ch_list = getattr(ln, "channels", None)
+            # Wait briefly for channels to populate (API is async)
+            import time as _time
+            def _ready(lst):
+                try:
+                    if not (isinstance(lst, list) and len(lst) > 0):
+                        return False
+                    # Ready if we have primary or any non-disabled with settings
+                    for _ch in lst:
+                        d = _pb_to_dict(_ch)
+                        if int(d.get("index", 0)) == 0:
+                            return True
+                        s = d.get("settings") or {}
+                        if s and str(d.get("role")).upper() != 'DISABLED':
+                            return True
+                except Exception:
+                    pass
+                return False
+
+            deadline = _time.monotonic() + 6.0
+            while _time.monotonic() < deadline:
+                ch_list = getattr(ln, "channels", None)
+                if _ready(ch_list):
+                    break
+                _time.sleep(0.2)
+            else:
+                ch_list = getattr(ln, "channels", None)
 
         user = iface.getMyUser() or {}
         metadata = _pb_to_dict(iface.metadata)
@@ -129,9 +154,9 @@ class DeviceReader(DeviceBase):
             chd = _pb_to_dict(ch)
             settings = chd.get("settings") or {}
             
+            # Skip channels that are explicitly disabled or have no settings
             if not settings or str(chd.get("role")).upper() == 'DISABLED':
-                if chd.get("index", 0) > 0: # Only break for secondary channels
-                    break
+                continue
 
             psk = settings.get("psk")
             mesh_channels.append(

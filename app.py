@@ -1,6 +1,7 @@
 # app.py
 from __future__ import annotations
 import os
+import time
 import logging
 import json
 import queue
@@ -53,8 +54,14 @@ class App(ctk.CTk):
         self.log_q: "queue.Queue[str]" = queue.Queue()
         qh = QueueLogHandler(self.log_q)
         qh.setLevel(logging.INFO)
-        qh.setFormatter(logging.Formatter("%(asctime)s — %(levelname)s — %(message)s", "%H:%M:%S"))
-        logging.getLogger().addHandler(qh)
+        root_logger = logging.getLogger()
+        try:
+            for _h in list(root_logger.handlers):
+                root_logger.removeHandler(_h)
+        except Exception:
+            pass
+        root_logger.addHandler(qh)
+        root_logger.setLevel(logging.INFO)
 
         # Layout
         self.columnconfigure(0, weight=0, minsize=520)
@@ -70,9 +77,14 @@ class App(ctk.CTk):
         self.right.columnconfigure(0, weight=1)
         self.right.rowconfigure(3, weight=1)
 
-        # Toolbar
+        # Presets bar (row 0)
+        self.preset_bar = ctk.CTkFrame(self.right)
+        self.preset_bar.grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 8))
+        self._build_preset_bar(self.preset_bar)
+
+        # Toolbar (row 1): Connect | Update | Disconnect + status
         self.toolbar = ctk.CTkFrame(self.right)
-        self.toolbar.grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 4))
+        self.toolbar.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 4))
         self.btn_detect = ctk.CTkButton(self.toolbar, text="Detect / Connect", command=self._on_detect_clicked)
         self.btn_detect.pack(side="left", padx=(0, 8))
         self.btn_apply = ctk.CTkButton(self.toolbar, text="Update Device", command=self._on_apply_clicked, state="disabled")
@@ -82,15 +94,26 @@ class App(ctk.CTk):
         self.status_lbl = ctk.CTkLabel(self.toolbar, text="")
         self.status_lbl.pack(side="right")
 
-        # Presets bar
-        self.preset_bar = ctk.CTkFrame(self.right)
-        self.preset_bar.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))
-        self._build_preset_bar(self.preset_bar)
+        # Info bar (row 2): Device info (left) and Clear Log (right)
+        self.info_bar = ctk.CTkFrame(self.right)
+        self.info_bar.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
+        self.info_bar.columnconfigure(0, weight=0)
+        self.info_bar.columnconfigure(1, weight=1)
+        self.device_info_lbl = ctk.CTkLabel(self.info_bar, text="")
+        self.device_info_lbl.pack(side="left")
+        self.btn_clear_log = ctk.CTkButton(self.info_bar, text="Clear Log", width=100, command=self._on_clear_log)
+        self.btn_clear_log.pack(side="right")
 
         # Log box
         self.log_box = ctk.CTkTextbox(self.right, height=360)
         self.log_box.grid(row=3, column=0, sticky="nsew", padx=8, pady=(0, 8))
         self.log_box.configure(state="disabled")
+
+        # Bottom progress bar under the log box
+        self.progress_bar = ctk.CTkProgressBar(self.right, mode="indeterminate")
+        self.progress_bar.grid(row=4, column=0, sticky="ew", padx=8, pady=(0, 8))
+        self.progress_bar.grid_remove()  # hidden by default
+        self._progress_running = False
 
         # --- PANELS ---
         self.panels: Dict[str, BasePanel] = {}
@@ -284,9 +307,13 @@ class App(ctk.CTk):
             
             def _apply_ui():
                 self._apply_model_to_all_panels(model)
+                try:
+                    self._update_device_info(model)
+                except Exception:
+                    pass
                 self.btn_apply.configure(state="normal")
                 self.btn_disconnect.configure(state="normal")
-                self._set_busy(False, f"Connected: {ident}")
+                self._set_busy(False, "Connected")
 
             self.after(0, _apply_ui)
         except Exception as e:
@@ -360,16 +387,23 @@ class App(ctk.CTk):
         if hasattr(self, "_device_connected"):
             self._device_connected = False
 
-        # CLEAR all panel UIs by applying a blank model
+        # CLEAR all panel UIs explicitly via panel.clear_ui() if available
+        try:
+            for p in getattr(self, "panels", {}).values():
+                if hasattr(p, "clear_ui"):
+                    try:
+                        p.clear_ui()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        # Also apply a blank model to ensure a consistent cleared state
         try:
             blank = self._make_blank_model()
             self._apply_model_to_all_panels(blank)
         except Exception:
-            # As a fallback, try per-panel clear if implemented
-            for p in getattr(self, "panels", {}).values():
-                if hasattr(p, "clear_ui"):
-                    try: p.clear_ui()
-                    except Exception: pass
+            pass
 
         # UI controls: disable Apply (no model loaded), enable Connect, update status
         try:
@@ -396,6 +430,9 @@ class App(ctk.CTk):
             self._log("Disconnected; serial interface closed, state reset, UI cleared.")
             self.btn_apply.configure(state="disabled")
             self.btn_disconnect.configure(state="disabled")
+            # Clear device info bar
+            if hasattr(self, "device_info_lbl"):
+                self.device_info_lbl.configure(text="")
         except Exception:
             pass
 
@@ -409,7 +446,13 @@ class App(ctk.CTk):
             edited_model = self._build_edited_model(self._orig_model)
             dc = DeviceController(port=self._connected_port)
             summary = dc.apply_from_models(self._orig_model, edited_model)
-            model = summary.pop("post_snapshot") 
+            model = summary.pop("post_snapshot", None)
+            # Ensure we always have a model to re-populate UI, even on no-change or partial reports
+            if model is None:
+                try:
+                    model = dc.reader.snapshot(force_refresh=False)
+                except Exception:
+                    model = dc.reader.snapshot(force_refresh=True)
             # self._log(json.dumps(summary, indent=2, default=str))
             self._log(json.dumps(self._summarize_apply_report(summary), indent=2, default=str))
 
@@ -417,12 +460,19 @@ class App(ctk.CTk):
             if summary.get("errors"):
                 self._log(f"Apply finished with errors: {summary['errors']}")
                 self._set_busy(False, "Apply finished with errors")
+                self._orig_model = model
+                self.after(0, lambda: self._apply_model_to_all_panels(model))
             else:
-                self._log("Update complete. Refreshing device data...")
-                self._set_busy(False, "Applied successfully")
-            
-            self._orig_model = model
-            self.after(0, lambda: self._apply_model_to_all_panels(model))
+                self._orig_model = model
+                self.after(0, lambda: self._apply_model_to_all_panels(model))
+                self.after(0, lambda: self._update_device_info(model))
+                # If nothing changed, avoid extra refresh work
+                if str(summary.get("status") or "").lower() == "no_change":
+                    self._set_busy(False, "No changes")
+                else:
+                    self._log("Update complete. Refreshing device data...")
+                    # Kick off a non-blocking refresh loop on the UI thread until channels are ready
+                    self.after(0, lambda: self._begin_channels_refresh_retry())
 
         except Exception as e:
             log.exception("Apply worker failed")
@@ -433,6 +483,64 @@ class App(ctk.CTk):
         """Iterates through all registered panels and applies the model."""
         for panel in self.panels.values():
             panel.apply_model(model)
+
+
+    # ---------------- Channel Refresh After Apply ----------------
+    def _begin_channels_refresh_retry(self, *, max_attempts: int = 8, interval_ms: int = 800):
+        """
+        Schedule repeated snapshots until channels are populated, then enable Apply.
+        Runs on the Tk main loop via after(); non-blocking.
+        """
+        try:
+            self.status_lbl.configure(text="Refreshing channels…")
+            self.btn_apply.configure(state="disabled")
+        except Exception:
+            pass
+
+        try:
+            self._set_busy(True, "Refreshing channels...")
+        except Exception:
+            pass
+
+        state = {"attempt": 0, "max": max_attempts}
+
+        def _tick():
+            try:
+                if not self._connected_port:
+                    return
+                from controllers.device_controller import DeviceController
+                dc = DeviceController(port=self._connected_port)
+                m = dc.snapshot()
+                has_channels = bool(getattr(m, "MeshChannels", None))
+                try:
+                    dc.close()
+                except Exception:
+                    pass
+                if has_channels:
+                    self._orig_model = m
+                    self._apply_model_to_all_panels(m)
+                    self._set_busy(False, "Applied successfully")
+                    try:
+                        self.btn_apply.configure(state="normal")
+                    except Exception:
+                        pass
+                    return
+            except Exception:
+                # swallow and retry
+                pass
+
+            state["attempt"] += 1
+            if state["attempt"] < state["max"]:
+                self.after(interval_ms, _tick)
+            else:
+                # Give up enabling apply anyway to avoid trapping the user
+                self._set_busy(False, "Applied (channels pending)")
+                try:
+                    self.btn_apply.configure(state="normal")
+                except Exception:
+                    pass
+
+        self.after(interval_ms, _tick)
 
 
     def _build_edited_model(self, base: DeviceModel) -> DeviceModel:
@@ -491,6 +599,16 @@ class App(ctk.CTk):
                         section_to_panel[sec] = panel
                 except Exception:
                     pass
+
+        # If the preset contains any channel sections, clear Channels UI first
+        try:
+            channel_sections = [s for s in preset.keys() if s == "Primary Channel" or str(s).startswith("Channel ")]
+            if channel_sections:
+                ch_panel = self.panels.get("Channels")
+                if ch_panel and hasattr(ch_panel, "clear_ui"):
+                    ch_panel.clear_ui()
+        except Exception:
+            pass
 
         # Dispatch each section
         for raw_section, fields in preset.items():
@@ -599,10 +717,55 @@ class App(ctk.CTk):
         except Exception:
             pass
 
+    def _on_clear_log(self):
+        try:
+            self.log_box.configure(state="normal")
+            self.log_box.delete("1.0", "end")
+            self.log_box.configure(state="disabled")
+        except Exception:
+            pass
+
+    def _update_device_info(self, model: DeviceModel | None):
+        """Show concise device info on the info bar (right side)."""
+        try:
+            if not model:
+                self.device_info_lbl.configure(text="")
+                return
+            port = getattr(getattr(model, "MetaData", None), "port", None) or ""
+            hw = getattr(getattr(model, "UserInfo", None), "hwModel", None) or getattr(getattr(model, "MetaData", None), "hwModel", None) or ""
+            fw = getattr(getattr(model, "MetaData", None), "firmwareVersion", None) or ""
+            parts = []
+            if port: parts.append(f"Port: {port}")
+            if hw: parts.append(f"Model: {hw}")
+            if fw: parts.append(f"FW: {fw}")
+            self.device_info_lbl.configure(text="  |  ".join(parts))
+        except Exception:
+            try:
+                self.device_info_lbl.configure(text="")
+            except Exception:
+                pass
+
     def _set_busy(self, busy: bool, status: str = ""):
         self.status_lbl.configure(text=status)
         self.btn_detect.configure(state="disabled" if busy else "normal")
         self.btn_apply.configure(state=("disabled" if busy else "normal") if self._orig_model else "disabled")
+        # Bottom progress bar visibility
+        try:
+            if busy:
+                if not self._progress_running:
+                    self.progress_bar.grid()
+                    self.progress_bar.start()
+                    self._progress_running = True
+            else:
+                if self._progress_running:
+                    try:
+                        self.progress_bar.stop()
+                    except Exception:
+                        pass
+                    self.progress_bar.grid_remove()
+                    self._progress_running = False
+        except Exception:
+            pass
 
 
     def _make_blank_model(self) -> DeviceModel:
@@ -652,7 +815,7 @@ class App(ctk.CTk):
         
         
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    # Logging is routed to the UI; avoid console basicConfig
     ctk.set_appearance_mode("dark")
     app = App()
     app.mainloop()

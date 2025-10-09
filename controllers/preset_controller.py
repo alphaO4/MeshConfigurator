@@ -131,6 +131,24 @@ class PresetController:
             log.warning("Keyring fetch failed for '%s': %s", token_or_label, e)
             return None
 
+    def _keyring_delete(self, token_or_label: str) -> bool:
+        """Delete secret by token or label from OS keyring. Returns True if deleted or absent."""
+        if not self._keyring_ok:
+            return False
+        try:
+            import keyring
+            label = self._label_from_token(token_or_label) if self._is_token(token_or_label) else token_or_label
+            # Some backends raise if not present; treat that as success for idempotence
+            keyring.delete_password(self._KR_SERVICE, label)
+            log.info("[preset] keyring entry removed: %s", label)
+            return True
+        except keyring.errors.PasswordDeleteError:
+            # Already absent
+            return True
+        except Exception as e:
+            log.warning("[preset] failed to remove keyring entry '%s': %s", token_or_label, e)
+            return False
+
     # ----- Secure PSK transforms -----
     def _secure_psks(self, preset_name: str, preset_data: dict) -> dict:
         """Return a copy of preset_data with PSKs moved to keyring and replaced by tokens."""
@@ -336,6 +354,23 @@ class PresetController:
         if not path.exists():
             log.warning("Cannot delete preset; file does not exist: %s", path)
             return False
+
+        # Attempt to remove any keyring entries referenced by this preset
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                for section, fields in (data or {}).items():
+                    try:
+                        psk = (fields or {}).get("PSK")
+                        if isinstance(psk, str) and self._is_token(psk):
+                            # Labels were stored as f"{preset}:{section}"
+                            self._keyring_delete(psk)
+                    except Exception:
+                        pass
+        except Exception:
+            # Non-fatal; continue with file deletion
+            pass
 
         try:
             os.remove(path)

@@ -41,37 +41,43 @@ class ChannelsPanel(BasePanel):
 
     def apply_model(self, model) -> None:
         """
-        Rebuild channel rows to match model.MeshChannels using ChannelFrame + pack().
+        In-place diff update of channel rows to match model.MeshChannels.
         - Primary (index 0) row is preserved and updated.
-        - All additional rows are destroyed/rebuilt from the model to avoid stale UI.
+        - Secondary rows are added/updated/removed to match target indices.
+        - If channels are empty, do nothing (avoid wiping during async refresh).
         """
         channels = getattr(model, "MeshChannels", None) or []
-        # nuke any existing non-primary frames from the UI
-        for cf in list(self._channel_frames):
-            if cf.index >= 1 and cf.winfo_exists():
-                try:
-                    cf.destroy()
-                except Exception:
-                    pass
-        # keep only the primary in our list
-        self._channel_frames = [cf for cf in self._channel_frames if cf.index == 0 and cf.winfo_exists()]
+        # If no channels are present, avoid wiping the UI; device may not have delivered them yet
+        if len(channels) == 0:
+            return
 
-        # primary row: ensure it exists, then apply the primary channel
+        # Ensure primary row exists and update it
         cf0 = self._get_channel_frame(0)
         if cf0 is None:
-            # Shouldn't happen because build() creates it, but be defensive.
             cf0 = ChannelFrame(self.frame, index=0, is_primary=True)
             cf0.pack(fill="x", padx=6, pady=4)
             self._channel_frames.append(cf0)
-
         ch0 = next((c for c in channels if getattr(c, "index", 0) == 0), None)
         self._apply_channel_to_frame(cf0, ch0)
 
-        # additional channels: add a row per channel present in model
-        for ch in sorted(channels, key=lambda c: getattr(c, "index", 0)):
-            idx = getattr(ch, "index", 0)
-            if idx >= 1 and self._is_nonempty_channel(ch):
-                self._add_channel_row(index=idx, model=ch)
+        # Build target set of secondary indices from model
+        target = sorted({int(getattr(c, "index", 0)) for c in channels if int(getattr(c, "index", 0)) >= 1 and self._is_nonempty_channel(c)})
+        current = sorted([cf.index for cf in self._channel_frames if cf.index >= 1 and cf.winfo_exists()])
+
+        # Remove secondary frames not in target
+        for idx in current:
+            if idx not in target:
+                self._delete_channel_row(idx)
+
+        # Add missing secondary frames and update all existing ones to model values
+        for idx in target:
+            cf = self._get_channel_frame(idx)
+            if cf is None:
+                self._add_channel_row(index=idx)
+                cf = self._get_channel_frame(idx)
+            if cf is not None:
+                ch = next((c for c in channels if int(getattr(c, "index", 0)) == idx), None)
+                self._apply_channel_to_frame(cf, ch)
 
 
     def _apply_channel_to_frame(self, cf: ChannelFrame | None, ch: MeshChannel | None):
@@ -99,14 +105,21 @@ class ChannelsPanel(BasePanel):
 
     def collect_meshchannels(self) -> List[MeshChannel]:
         out: List[MeshChannel] = []
+        # Renumber secondaries sequentially (1..N) to avoid stale indices from presets/old UI
+        sec_idx = 1
         for cf in sorted(self._channel_frames, key=lambda f: f.index):
-            if not cf.winfo_exists(): continue
-            
+            if not cf.winfo_exists():
+                continue
+
             precision = int(cf.precision_var.get().strip() or "0") if cf.gps_var.get() else 0
             psk_val = cf.key_var.get().strip()
-            
+
+            idx = 0 if cf.index == 0 else sec_idx
+            if cf.index != 0:
+                sec_idx += 1
+
             out.append(MeshChannel(
-                index=cf.index,
+                index=idx,
                 name=(cf.name_var.get().strip() or None),
                 uplink_enabled=cf.uplink_var.get(),
                 downlink_enabled=cf.downlink_var.get(),
@@ -168,6 +181,29 @@ class ChannelsPanel(BasePanel):
         
         if hasattr(cf, "update_gps_enabled"): cf.update_gps_enabled()
         if hasattr(cf, "update_psk_preview"): cf.update_psk_preview()
+
+
+    def clear_ui(self):
+        """Clear all channel UI: reset primary row and remove all secondary rows."""
+        # Reset primary
+        cf0 = self._get_channel_frame(0)
+        if cf0 is None:
+            # If for some reason primary is missing, create a fresh one
+            cf0 = ChannelFrame(self.frame, index=0, is_primary=True)
+            cf0.pack(fill="x", padx=6, pady=4)
+            self._channel_frames.append(cf0)
+        # Apply empty model to primary
+        self._apply_channel_to_frame(cf0, None)
+
+        # Remove all secondary frames
+        for cf in list(self._channel_frames):
+            if cf.index >= 1 and cf.winfo_exists():
+                try:
+                    cf.destroy()
+                except Exception:
+                    pass
+        # Keep only the primary reference
+        self._channel_frames = [cf for cf in self._channel_frames if cf.index == 0 and cf.winfo_exists()]
 
 
     def _on_add_channel_clicked(self):
