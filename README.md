@@ -1,8 +1,7 @@
 > **Not affiliated with Meshtastic.** This project is an independent, community-built tool **for Meshtastic** devices and is not endorsed by Meshtastic LLC.
 
-Instructional Video:
-[![Watch the video](https://img.youtube.com/vi/cI8KEb7sWV0/maxresdefault.jpg)](https://www.youtube.com/watch?v=cI8KEb7sWV0)
-
+How-To Video:
+[![Watch on YouTube](https://img.shields.io/badge/YouTube-Watch-red)](https://youtu.be/cI8KEb7sWV0)
 
 # Optional Installer (Windows)
 
